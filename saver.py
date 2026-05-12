@@ -5,6 +5,7 @@ import sqlite3
 import time
 import sys
 
+
 def init_db(conn):
     conn.executescript("""
     CREATE TABLE IF NOT EXISTS snapshots (
@@ -47,7 +48,6 @@ def init_db(conn):
 
 def parse_scoreboard_dat(file_path) -> dict:
     nbt_file = nbt.NBTFile(file_path, "rb")
-
     data = nbt_file["data"]
 
     result = {}
@@ -55,7 +55,6 @@ def parse_scoreboard_dat(file_path) -> dict:
     if "Objectives" in data:
         for obj in data["Objectives"]:
             internal_name = str(obj["Name"].value)
-
             result[internal_name] = {
                 "displayName": str(obj["DisplayName"].value),
                 "criteriaName": str(obj["CriteriaName"].value),
@@ -72,11 +71,10 @@ def parse_scoreboard_dat(file_path) -> dict:
             player_name = str(score_entry["Name"].value)
             score = int(score_entry["Score"].value)
 
-            result[objective_name]["stats"].append(
-                (player_name, score)
-            )
+            result[objective_name]["stats"].append((player_name, score))
 
     return result
+
 
 def insert_snapshot(conn, scoreboard_data):
     cur = conn.cursor()
@@ -92,17 +90,14 @@ def insert_snapshot(conn, scoreboard_data):
 
     for objective_name, obj_data in scoreboard_data.items():
 
+        # ---- OBJECTIVES (SQLite-safe UPSERT) ----
         cur.execute("""
-            INSERT INTO objectives(
+            INSERT OR IGNORE INTO objectives(
                 internal_name,
                 display_name,
                 criteria_name
             )
             VALUES (?, ?, ?)
-            ON CONFLICT(internal_name)
-            DO UPDATE SET
-                display_name=excluded.display_name,
-                criteria_name=excluded.criteria_name
         """, (
             objective_name,
             obj_data["displayName"],
@@ -110,20 +105,29 @@ def insert_snapshot(conn, scoreboard_data):
         ))
 
         cur.execute("""
+            UPDATE objectives
+            SET display_name = ?,
+                criteria_name = ?
+            WHERE internal_name = ?
+        """, (
+            obj_data["displayName"],
+            obj_data["criteriaName"],
+            objective_name
+        ))
+
+        cur.execute("""
             SELECT id
             FROM objectives
             WHERE internal_name=?
         """, (objective_name,))
-
         objective_id = cur.fetchone()[0]
 
         for player_name, score in obj_data["stats"]:
 
+            # ---- PLAYERS (SQLite-safe INSERT IGNORE) ----
             cur.execute("""
-                INSERT INTO players(name)
+                INSERT OR IGNORE INTO players(name)
                 VALUES (?)
-                ON CONFLICT(name)
-                DO NOTHING
             """, (player_name,))
 
             cur.execute("""
@@ -131,28 +135,19 @@ def insert_snapshot(conn, scoreboard_data):
                 FROM players
                 WHERE name=?
             """, (player_name,))
-
             player_id = cur.fetchone()[0]
 
             cur.execute("""
                 SELECT sc.score
                 FROM scores sc
-
-                JOIN snapshots s
-                    ON sc.snapshot_id = s.id
-
+                JOIN snapshots s ON sc.snapshot_id = s.id
                 WHERE sc.player_id=?
                   AND sc.objective_id=?
-
                 ORDER BY s.created_at DESC
                 LIMIT 1
-            """, (
-                player_id,
-                objective_id
-            ))
+            """, (player_id, objective_id))
 
             row = cur.fetchone()
-
             previous_score = row[0] if row else None
 
             if previous_score == score:
@@ -166,158 +161,23 @@ def insert_snapshot(conn, scoreboard_data):
                     score
                 )
                 VALUES (?, ?, ?, ?)
-            """, (
-                snapshot_id,
-                objective_id,
-                player_id,
-                score
-            ))
+            """, (snapshot_id, objective_id, player_id, score))
 
     conn.commit()
 
-def query_player_objective(
-    conn,
-    player_name: str,
-    objective_name: str,
-    start_time: str,
-    end_time: str
-):
-    """
-    Query padded timeseries data.
-
-    Time format examples:
-        "2025-08-06"
-        "2025-08-06 15:00:00"
-
-    Returns:
-        [
-            ("2025-08-06 03:00:00", 1200),
-            ("2025-08-06 15:00:00", 1300),
-            ...
-        ]
-    """
-
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT id
-        FROM players
-        WHERE name=?
-    """, (player_name,))
-
-    row = cur.fetchone()
-
-    if not row:
-        return []
-
-    player_id = row[0]
-
-    cur.execute("""
-        SELECT id
-        FROM objectives
-        WHERE internal_name=?
-    """, (objective_name,))
-
-    row = cur.fetchone()
-
-    if not row:
-        return []
-
-    objective_id = row[0]
-
-    cur.execute("""
-        SELECT id, created_at
-        FROM snapshots
-        WHERE created_at >= ?
-          AND created_at <= ?
-        ORDER BY created_at
-    """, (
-        start_time,
-        end_time
-    ))
-
-    snapshots = cur.fetchall()
-
-    if not snapshots:
-        return []
-
-    cur.execute("""
-        SELECT
-            sc.snapshot_id,
-            sc.score
-        FROM scores sc
-
-        WHERE sc.player_id=?
-          AND sc.objective_id=?
-    """, (
-        player_id,
-        objective_id
-    ))
-
-    score_changes = {
-        snapshot_id: score
-        for snapshot_id, score in cur.fetchall()
-    }
-
-    cur.execute("""
-        SELECT sc.score
-        FROM scores sc
-
-        JOIN snapshots s
-            ON sc.snapshot_id = s.id
-
-        WHERE sc.player_id=?
-          AND sc.objective_id=?
-          AND s.created_at < ?
-
-        ORDER BY s.created_at DESC
-        LIMIT 1
-    """, (
-        player_id,
-        objective_id,
-        start_time
-    ))
-
-    row = cur.fetchone()
-
-    current_score = row[0] if row else None
-
-    result = []
-
-    for snapshot_id, created_at in snapshots:
-
-        if snapshot_id in score_changes:
-            current_score = score_changes[snapshot_id]
-
-        if current_score is None:
-            continue
-
-        result.append((
-            created_at,
-            current_score
-        ))
-
-    return result
 
 def take_snapshot():
     try:
-        scoreboard_data = parse_scoreboard_dat(
-            sys.argv[1]
-        )
+        scoreboard_data = parse_scoreboard_dat(sys.argv[1])
 
         conn = sqlite3.connect("scoreboard.db")
-
         init_db(conn)
-
         insert_snapshot(conn, scoreboard_data)
-
         conn.close()
 
     except Exception as e:
-        print(
-            f"[{datetime.now()}] "
-            f"ERROR: {e}"
-        )
+        print(f"[{datetime.now()}] ERROR: {e}")
+
 
 if __name__ == "__main__":
     schedule.every().hour.do(take_snapshot)
