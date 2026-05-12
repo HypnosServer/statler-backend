@@ -14,6 +14,8 @@ def query_player_objective(
     end_time
 ):
     cur = conn.cursor()
+    print(start_time)
+    print(end_time)
 
     cur.execute("""
         SELECT id
@@ -45,7 +47,7 @@ def query_player_objective(
         JOIN snapshots s ON sc.snapshot_id = s.id
         WHERE sc.player_id = ?
           AND sc.objective_id = ?
-          AND s.created_at <= ?
+          AND datetime(s.created_at) <= datetime(?)
         ORDER BY s.created_at DESC
         LIMIT 1
     """, (player_id, objective_id, start_time))
@@ -56,8 +58,8 @@ def query_player_objective(
     cur.execute("""
         SELECT id, created_at
         FROM snapshots
-        WHERE created_at >= ?
-          AND created_at <= ?
+        WHERE datetime(created_at) >= datetime(?)
+          AND datetime(created_at) <= datetime(?)
         ORDER BY created_at
     """, (start_time, end_time))
 
