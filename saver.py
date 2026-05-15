@@ -69,9 +69,17 @@ def parse_scoreboard_dat(file_path) -> dict:
                 continue
 
             player_name = str(score_entry["Name"].value)
+            if player_name.lower() == "Total":
+                continue
             score = int(score_entry["Score"].value)
 
             result[objective_name]["stats"].append((player_name, score))
+
+    for obj_data in result.values():
+        total_score = 0
+        for player, score in obj_data["stats"]:
+            total_score += score
+        obj_data["stats"].append(("Total", total_score))
 
     return result
 
@@ -180,7 +188,7 @@ def take_snapshot():
 
 
 if __name__ == "__main__":
-    schedule.every().hour.do(take_snapshot)
+    schedule.every().second.do(take_snapshot)
     while True:
         schedule.run_pending()
         time.sleep(1)
