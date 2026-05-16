@@ -69,7 +69,7 @@ def parse_scoreboard_dat(file_path) -> dict:
                 continue
 
             player_name = str(score_entry["Name"].value)
-            if player_name.lower() == "Total":
+            if player_name.lower() == "total":
                 continue
             score = int(score_entry["Score"].value)
 
@@ -184,6 +184,7 @@ def take_snapshot():
         conn.close()
 
     except Exception as e:
+        raise e
         print(f"[{datetime.now()}] ERROR: {e}")
 
 
