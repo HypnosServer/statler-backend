@@ -87,7 +87,7 @@ def parse_scoreboard_dat(file_path) -> dict:
 def insert_snapshot(conn, scoreboard_data):
     cur = conn.cursor()
 
-    created_at = datetime.utcnow()
+    created_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
     cur.execute("""
         INSERT INTO snapshots(created_at)
@@ -98,7 +98,6 @@ def insert_snapshot(conn, scoreboard_data):
 
     for objective_name, obj_data in scoreboard_data.items():
 
-        # ---- OBJECTIVES (SQLite-safe UPSERT) ----
         cur.execute("""
             INSERT OR IGNORE INTO objectives(
                 internal_name,
@@ -184,11 +183,17 @@ def take_snapshot():
         conn.close()
 
     except Exception as e:
-        raise e
         print(f"[{datetime.now()}] ERROR: {e}")
 
 
 if __name__ == "__main__":
+    conn = sqlite3.connect("scoreboard.db")
+    init_db(conn)
+    conn.execute("UPDATE snapshots SET created_at = strftime('%Y-%m-%d %H:%M:%S', created_at)")
+    conn.commit()
+    conn.close()
+
+    take_snapshot()  
     schedule.every().hour.do(take_snapshot)
     while True:
         schedule.run_pending()
