@@ -189,7 +189,7 @@ def take_snapshot():
 
 
 if __name__ == "__main__":
-    schedule.every().second.do(take_snapshot)
+    schedule.every().hour.do(take_snapshot)
     while True:
         schedule.run_pending()
         time.sleep(1)
