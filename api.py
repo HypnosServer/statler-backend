@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+from datetime import datetime, timedelta
 import sqlite3
 
 app = Flask(__name__)
@@ -159,10 +160,119 @@ def query_endpoint():
         "data": data
     })
 
+def get_monday_00_utc():
+    now = datetime.utcnow()
+    monday = now - timedelta(days=now.weekday())
+    return monday.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def get_top5_weekly_gainers_selected_objectives(conn, objective_names):
+    if not objective_names:
+        return []
+
+    cur = conn.cursor()
+
+    monday_start = get_monday_00_utc().strftime("%Y-%m-%d %H:%M:%S")
+
+    placeholders = ",".join(["?"] * len(objective_names))
+    cur.execute(f"""
+        SELECT id, internal_name
+        FROM objectives
+        WHERE internal_name IN ({placeholders})
+    """, objective_names)
+
+    objective_ids = [row[0] for row in cur.fetchall()]
+
+    if not objective_ids:
+        return []
+
+    obj_placeholders = ",".join(["?"] * len(objective_ids))
+
+    query = f"""
+    WITH ranked_scores AS (
+        SELECT
+            sc.player_id,
+            sc.objective_id,
+            sc.score,
+            s.created_at,
+
+            ROW_NUMBER() OVER (
+                PARTITION BY sc.player_id, sc.objective_id
+                ORDER BY s.created_at ASC
+            ) AS rn_asc,
+
+            ROW_NUMBER() OVER (
+                PARTITION BY sc.player_id, sc.objective_id
+                ORDER BY s.created_at DESC
+            ) AS rn_desc
+
+        FROM scores sc
+        JOIN snapshots s ON sc.snapshot_id = s.id
+        WHERE s.created_at >= ?
+          AND sc.objective_id IN ({obj_placeholders})
+    ),
+
+    first_last AS (
+        SELECT
+            player_id,
+            objective_id,
+            MAX(CASE WHEN rn_asc = 1 THEN score END) AS first_score,
+            MAX(CASE WHEN rn_desc = 1 THEN score END) AS last_score
+        FROM ranked_scores
+        GROUP BY player_id, objective_id
+    ),
+
+    gains AS (
+        SELECT
+            player_id,
+            (last_score - first_score) AS gain
+        FROM first_last
+    )
+
+    SELECT
+        p.name,
+        SUM(g.gain) AS total_gain
+    FROM gains g
+    JOIN players p ON p.id = g.player_id
+    WHERE p.name != 'Total'
+    GROUP BY g.player_id
+    ORDER BY total_gain DESC
+    LIMIT 5;
+    """
+
+    cur.execute(query, [monday_start] + objective_ids)
+    return cur.fetchall()
+
+
+@app.route("/api/weekly", methods=["GET"])
+def weekly_leaderboard():
+    print(request.args)
+    objectives = request.args.get("objectives", "")
+
+    if not objectives.strip():
+        return jsonify({
+            "error": "Missing 'objectives' query parameter (e.g. stone,dirt)"
+        }), 400
+
+    objective_list = [o.strip() for o in objectives.split(",") if o.strip()]
+
+    conn = sqlite3.connect(DB_PATH)
+
+    try:
+        results = get_top5_weekly_gainers_selected_objectives(conn, objective_list)
+
+        return jsonify([
+            {"player": name, "gain": gain}
+            for name, gain in results
+        ])
+
+    finally:
+        conn.close()
+
 
 if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
-        port=5000,
-        debug=True
+        port=11002,
+        debug=False
     )
