@@ -189,44 +189,50 @@ def get_top5_weekly_gainers_selected_objectives(conn, objective_names):
     obj_placeholders = ",".join(["?"] * len(objective_ids))
 
     query = f"""
-    WITH ranked_scores AS (
+    WITH first_scores AS (
         SELECT
             sc.player_id,
             sc.objective_id,
-            sc.score,
-            s.created_at,
-
-            ROW_NUMBER() OVER (
-                PARTITION BY sc.player_id, sc.objective_id
-                ORDER BY s.created_at ASC
-            ) AS rn_asc,
-
-            ROW_NUMBER() OVER (
-                PARTITION BY sc.player_id, sc.objective_id
-                ORDER BY s.created_at DESC
-            ) AS rn_desc
-
+            sc.score AS first_score
         FROM scores sc
         JOIN snapshots s ON sc.snapshot_id = s.id
-        WHERE s.created_at >= ?
+        WHERE s.created_at = (
+            SELECT MIN(s2.created_at)
+            FROM scores sc2
+            JOIN snapshots s2 ON sc2.snapshot_id = s2.id
+            WHERE sc2.player_id = sc.player_id
+              AND sc2.objective_id = sc.objective_id
+              AND s2.created_at >= ?
+        )
           AND sc.objective_id IN ({obj_placeholders})
     ),
 
-    first_last AS (
+    last_scores AS (
         SELECT
-            player_id,
-            objective_id,
-            MAX(CASE WHEN rn_asc = 1 THEN score END) AS first_score,
-            MAX(CASE WHEN rn_desc = 1 THEN score END) AS last_score
-        FROM ranked_scores
-        GROUP BY player_id, objective_id
+            sc.player_id,
+            sc.objective_id,
+            sc.score AS last_score
+        FROM scores sc
+        JOIN snapshots s ON sc.snapshot_id = s.id
+        WHERE s.created_at = (
+            SELECT MAX(s2.created_at)
+            FROM scores sc2
+            JOIN snapshots s2 ON sc2.snapshot_id = s2.id
+            WHERE sc2.player_id = sc.player_id
+              AND sc2.objective_id = sc.objective_id
+              AND s2.created_at >= ?
+        )
+          AND sc.objective_id IN ({obj_placeholders})
     ),
 
     gains AS (
         SELECT
-            player_id,
-            (last_score - first_score) AS gain
-        FROM first_last
+            f.player_id,
+            (l.last_score - f.first_score) AS gain
+        FROM first_scores f
+        JOIN last_scores l
+          ON f.player_id = l.player_id
+         AND f.objective_id = l.objective_id
     )
 
     SELECT
@@ -240,7 +246,8 @@ def get_top5_weekly_gainers_selected_objectives(conn, objective_names):
     LIMIT 5;
     """
 
-    cur.execute(query, [monday_start] + objective_ids)
+    params = [monday_start] + objective_ids + [monday_start] + objective_ids
+    cur.execute(query, params)
     return cur.fetchall()
 
 
