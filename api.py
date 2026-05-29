@@ -197,12 +197,12 @@ def get_top5_weekly_gainers_selected_objectives(conn, objective_names):
         FROM scores sc
         JOIN snapshots s ON sc.snapshot_id = s.id
         WHERE s.created_at = (
-            SELECT MIN(s2.created_at)
+            SELECT MAX(s2.created_at)
             FROM scores sc2
             JOIN snapshots s2 ON sc2.snapshot_id = s2.id
             WHERE sc2.player_id = sc.player_id
               AND sc2.objective_id = sc.objective_id
-              AND s2.created_at >= ?
+              AND s2.created_at < ?
         )
           AND sc.objective_id IN ({obj_placeholders})
     ),
